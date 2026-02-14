@@ -1,3 +1,4 @@
+#pragma once
 #include <queue>
 #include <mutex>
 #include <condition_variable>
@@ -5,29 +6,47 @@
 using namespace std;
 
 template <typename T>
-class TSQueue {
+class SafeQueue {
 private:
-    queue<T> m_queue;  // Underlying queue
-    mutex m_mutex; // mutex for thread synchronization
-    condition_variable m_cond; // Condition variable for signaling
+    queue<T> m_queue;
+    mutex m_mutex;
+    condition_variable m_cond;
+    bool m_stop = false; // Flag to stop the queue
 
 public:
-    // Pushes an element to the queue
-    void push(T item)
-    {
-        unique_lock<mutex> lock(m_mutex); // Acquire lock
-        m_queue.push(item); // Add item
-		m_cond.notify_one(); // Notify one waiting thread
+    void push(T item) {
+        {
+            unique_lock<mutex> lock(m_mutex);
+            m_queue.push(move(item));
+        }
+        m_cond.notify_one();
     }
 
-    // Pops an element off the queue
-    T pop()
-    {
-		unique_lock<mutex> lock(m_mutex); // Acquire lock
-        m_cond.wait(lock, [this]() { return !m_queue.empty(); }); // Wait until the queue is not empty
-        T item = m_queue.front();  // retrieve item
-        m_queue.pop();
+    // Returns false if queue is stopped and empty
+    bool pop(T& item) {
+        unique_lock<mutex> lock(m_mutex);
 
-       return item;  // return item
+        // Wait until queue is not empty OR stop is requested
+        m_cond.wait(lock, [this]() {
+            return !m_queue.empty() || m_stop;
+            });
+
+        // If stopped and empty, return false so the worker can exit
+        if (m_queue.empty() && m_stop) {
+            return false;
+        }
+
+        item = move(m_queue.front());
+        m_queue.pop();
+        return true;
+    }
+
+    // Wakes up all waiting threads so they can exit gracefully
+    void shutdown() {
+        {
+           unique_lock<mutex> lock(m_mutex);
+            m_stop = true;
+        }
+        m_cond.notify_all();
     }
 };
